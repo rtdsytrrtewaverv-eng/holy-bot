@@ -9,3 +9,6 @@ __pycache__/
 venv/
 .idea/
 .vscode/
+
+# Старая вложенная папка (с .env, БД и venv) — не коммитим
+bot_project/
