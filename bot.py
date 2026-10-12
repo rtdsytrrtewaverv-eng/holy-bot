@@ -147,11 +147,32 @@ def _to_int_port(value, default=8080):
 
 async def main():
     """Инициализация БД и запуск поллинга."""
+    # Проверяем токен ДО запуска — понятная ошибка вместо crash-loop
+    if not BOT_TOKEN:
+        logger.critical(
+            "❌ BOT_TOKEN не задан! Добавьте переменную окружения BOT_TOKEN "
+            "(токен от @BotFather) в настройках хостинга."
+        )
+        return
+
+    try:
+        me = await bot.get_me()
+        logger.info("Подключено к Telegram: @%s (id=%s)", me.username, me.id)
+    except Exception as e:
+        logger.critical(
+            "❌ Не удалось подключиться к Telegram: %s\n"
+            "Проверьте BOT_TOKEN — возможно, он неверный или отозван "
+            "(получите новый у @BotFather → /mybots → API Token).",
+            e
+        )
+        await bot.session.close()
+        return
+
     logger.info("Инициализация базы данных...")
     await init_db()
     logger.info("Бот запущен!")
 
-    # Запускаем keep-alive веб-сервер (для Replit/UptimeRobot)
+    # Запускаем keep-alive веб-сервер (для Replit/UptimeRobot/bothost)
     try:
         await start_keepalive_server()
     except Exception as e:
