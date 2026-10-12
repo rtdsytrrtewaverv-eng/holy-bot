@@ -161,8 +161,30 @@ async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: lis
     )
 
 
+async def send_file_by_type(bot: Bot, chat_id: int, file_type: str, file_id: str):
+    """
+    Отправляет файл нужного типа БЕЗ подписи и кнопок.
+    Так файл уходит надёжно — даже если текст/разметка сломаны.
+    """
+    ft = (file_type or "document").lower()
+    if ft == "video":
+        return await bot.send_video(chat_id=chat_id, video=file_id)
+    if ft == "audio":
+        return await bot.send_audio(chat_id=chat_id, audio=file_id)
+    if ft == "voice":
+        return await bot.send_voice(chat_id=chat_id, voice=file_id)
+    if ft == "animation":
+        return await bot.send_animation(chat_id=chat_id, animation=file_id)
+    # по умолчанию — документ
+    return await bot.send_document(chat_id=chat_id, document=file_id)
+
+
 async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
-    """Отправляет файл пользователю с кнопками."""
+    """
+    Выдаёт файл: сначала отправляет САМ ФАЙЛ, затем отдельным сообщением —
+    описание с кнопками. Это надёжнее, чем caption, который может не пройти
+    из-за длины/разметки и «утащить» за собой весь файл.
+    """
     howto_url = file_data.get("howto_url") or DEFAULT_HOWTO_URL
     howto_text = await get_text("howto_button_text") or "📖 Как установить?"
     conf_text_tpl = await get_text("subscription_confirmed")
@@ -171,59 +193,48 @@ async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
         description=file_data.get("description", "")
     )
 
+    # 1) Отправляем сам файл (без caption)
+    file_sent = False
     try:
-        if file_data["file_type"] == "document":
-            await bot.send_document(
-                chat_id=chat_id,
-                document=file_data["file_id"],
-                caption=conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML"
-            )
-        elif file_data["file_type"] == "video":
-            await bot.send_video(
-                chat_id=chat_id,
-                video=file_data["file_id"],
-                caption=conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML"
-            )
-        elif file_data["file_type"] == "audio":
-            await bot.send_audio(
-                chat_id=chat_id,
-                audio=file_data["file_id"],
-                caption=conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML"
-            )
-        elif file_data["file_type"] == "voice":
-            await bot.send_voice(
-                chat_id=chat_id,
-                voice=file_data["file_id"],
-                caption=conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML"
-            )
-        else:
-            await bot.send_document(
-                chat_id=chat_id,
-                document=file_data["file_id"],
-                caption=conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML"
-            )
+        await send_file_by_type(bot, chat_id, file_data["file_type"], file_data["file_id"])
+        file_sent = True
+        await increment_file_downloads(file_data["slug"])
+        await increment_downloads(user_id)
     except Exception as e:
-        logger.error("Не удалось отправить файл slug=%r: %s", file_data.get("slug"), e)
+        logger.error(
+            "Не удалось отправить файл slug=%r file_type=%r file_id=%r: %s",
+            file_data.get("slug"), file_data.get("file_type"),
+            str(file_data.get("file_id"))[:40], e
+        )
+
+    # 2) Отправляем описание с кнопками
+    try:
+        await bot.send_message(
+            chat_id,
+            conf_text,
+            reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
+            parse_mode="HTML", disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error("Не удалось отправить описание файла: %s", e)
+        # последняя попытка — без разметки
         try:
-            await bot.send_message(
-                chat_id,
-                conf_text,
-                reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-                parse_mode="HTML", disable_web_page_preview=True
-            )
+            plain = f"🎁 Ваш файл: {file_data.get('title', file_data['slug'])}"
+            await bot.send_message(chat_id, plain,
+                                   reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text))
         except Exception as e2:
-            logger.error("Резервная отправка текста тоже не удалась: %s", e2)
-            await bot.send_message(chat_id, "❌ Ошибка при отправке файла. Сообщите администратору.")
+            logger.error("Не удалось отправить даже простое описание: %s", e2)
+
+    # 3) Если файл не ушёл — честно сообщаем об ошибке
+    if not file_sent:
+        await bot.send_message(
+            chat_id,
+            "⚠️ <b>Файл не удалось отправить.</b>\n\n"
+            "Администратору: обновите файл в админке "
+            "(📁 Файлы → файл → 📎 Заменить файл), "
+            "так как file_id мог устареть.",
+            parse_mode="HTML"
+        )
 
 
 @user_router.callback_query(SubsCallback.filter(F.action == "check"))
