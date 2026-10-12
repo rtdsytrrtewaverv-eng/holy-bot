@@ -49,7 +49,27 @@ async def cq_admin_menu(callback: CallbackQuery, callback_data: MenuCallback):
 
     action = callback_data.action
 
-    if action == "stats":
+    if action == "admin_panel":
+        await callback.answer()
+        try:
+            await callback.message.edit_text(
+                "<b>👑 Админ-панель</b>\n\nВыберите раздел:",
+                reply_markup=admin_main_menu(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            # Стартовое сообщение может быть с фото — тогда редактировать
+            # текст нельзя. Удаляем его и отправляем админ-меню заново.
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await callback.message.answer(
+                "<b>👑 Админ-панель</b>\n\nВыберите раздел:",
+                reply_markup=admin_main_menu(),
+                parse_mode="HTML"
+            )
+    elif action == "stats":
         from handlers.stats import show_stats
         await callback.answer()
         await show_stats(callback)

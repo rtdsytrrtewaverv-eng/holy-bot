@@ -3,7 +3,7 @@
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
-from callbacks import SubsCallback, DownloadCallback
+from callbacks import SubsCallback, DownloadCallback, MenuCallback
 
 
 def subscribe_keyboard(slug: str = "", channels: list = None, button_text: str = "📢 Подписаться"):
@@ -54,8 +54,15 @@ def file_delivery_keyboard(slug: str, howto_url: str, howto_text: str = "📖 К
     return builder.as_markup()
 
 
-def start_keyboard():
-    """Клавиатура на /start: [ℹ️ Помощь]."""
+def start_keyboard(is_admin: bool = False):
+    """
+    Клавиатура на /start.
+    [ℹ️ Помощь] — всем.
+    [👑 Админка] — только администраторам.
+    """
     builder = InlineKeyboardBuilder()
     builder.button(text="ℹ️ Помощь", callback_data=SubsCallback(action="help", slug=""))
+    if is_admin:
+        builder.button(text="👑 Админка", callback_data=MenuCallback(action="admin_panel"))
+    builder.adjust(1)
     return builder.as_markup()

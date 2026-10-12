@@ -127,15 +127,11 @@ async def cmd_start(message: Message, bot: Bot):
     start_text = start_text_tpl.format(
         username=f"@{username}" if username else first_name
     )
-    await send_start_photo(bot, message.chat.id, start_text, reply_markup=start_keyboard())
-
-    if await is_admin(user_id):
-        from keyboards.admin_kb import admin_main_menu
-        await message.answer(
-            "<b>👑 Админ-панель</b>\n\nВыберите раздел:",
-            reply_markup=admin_main_menu(),
-            parse_mode="HTML"
-        )
+    admin_flag = await is_admin(user_id)
+    await send_start_photo(
+        bot, message.chat.id, start_text,
+        reply_markup=start_keyboard(is_admin=admin_flag)
+    )
 
 
 async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: list = None):
@@ -271,7 +267,11 @@ async def cq_main_menu(callback: CallbackQuery, bot: Bot):
         await callback.message.delete()
     except Exception:
         pass
-    await send_start_photo(bot, user_id, start_text, reply_markup=start_keyboard())
+    admin_flag = await is_admin(user_id)
+    await send_start_photo(
+        bot, user_id, start_text,
+        reply_markup=start_keyboard(is_admin=admin_flag)
+    )
     await callback.answer()
 
 
