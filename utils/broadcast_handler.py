@@ -4,9 +4,14 @@
 """
 
 import asyncio
+import logging
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 from database import get_all_users, update_broadcast
+from utils.files import send_file
+
+logger = logging.getLogger(__name__)
 
 
 async def execute_broadcast(
@@ -16,11 +21,12 @@ async def execute_broadcast(
     message_content: str,
     button_text: str = "",
     button_url: str = "",
-    filter_type: str = "all"
+    filter_type: str = "all",
+    caption: str = "",
 ):
     """
     Выполняет рассылку по фильтру.
-    message_content — для text это текст; для photo/video это file_id.
+    message_content — для text это текст; для остальных — file_id.
     """
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -47,27 +53,12 @@ async def execute_broadcast(
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-            elif message_type == "photo":
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=message_content,
-                    caption=None,
-                    reply_markup=reply_markup
-                )
-            elif message_type == "video":
-                await bot.send_video(
-                    chat_id=user_id,
-                    video=message_content,
-                    caption=None,
-                    reply_markup=reply_markup
-                )
             else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=message_content,
+                # Любой файл: фото, видео, документ, аудио, GIF и т.д.
+                await send_file(
+                    bot, user_id, message_type, message_content,
+                    caption=caption or None,
                     reply_markup=reply_markup,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
                 )
             sent += 1
         except TelegramRetryAfter as e:
@@ -75,7 +66,8 @@ async def execute_broadcast(
             failed += 1
         except TelegramForbiddenError:
             failed += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("Рассылка: не отправлено %s: %s", user_id, e)
             failed += 1
         await asyncio.sleep(0.05)
 

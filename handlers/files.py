@@ -3,6 +3,8 @@
 Хендлеры управления файлами: добавление, список, редактирование, удаление, ссылка.
 """
 
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
@@ -20,6 +22,9 @@ from keyboards.files_kb import (
     file_confirm_delete_kb,
 )
 from utils.ui import toast, breadcrumb, paginate, sanitize_slug
+from utils.files import extract_file, send_file, file_display_name
+
+logger = logging.getLogger(__name__)
 
 files_router = Router(name="files")
 
@@ -40,32 +45,25 @@ async def cq_file_add(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_text(
         "<b>📤 Отправьте файл</b>\n\n"
-        "Поддерживаются: документы, видео, аудио, голосовые.\n"
+        "Поддерживается <b>любой файл с любым расширением</b>:\n"
+        "документы (.zip, .ipa, .apk, .exe, .pdf и т.д.), видео, аудио, "
+        "голосовые, GIF, фото, стикеры.\n\n"
         "Отправьте файл или нажмите /cancel для отмены.",
         reply_markup=None,
         parse_mode="HTML"
     )
 
 
-@files_router.message(AddFileStates.file, F.content_type.in_({"document", "video", "audio", "voice"}))
+@files_router.message(AddFileStates.file)
 async def add_file_step_file(message: Message, state: FSMContext, bot: Bot):
     if not await is_admin(message.from_user.id):
         return
 
-    if message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-    elif message.video:
-        file_id = message.video.file_id
-        file_type = "video"
-    elif message.audio:
-        file_id = message.audio.file_id
-        file_type = "audio"
-    elif message.voice:
-        file_id = message.voice.file_id
-        file_type = "voice"
-    else:
-        await message.answer("❌ Неподдерживаемый тип. Отправьте документ, видео, аудио или голосовое.")
+    file_type, file_id = extract_file(message)
+    if not file_id:
+        await message.answer(
+            "❌ Не вижу вложения. Отправьте файл (документ, видео, аудио и т.п.)."
+        )
         return
 
     await state.update_data(file_id=file_id, file_type=file_type)
@@ -316,26 +314,16 @@ async def edit_file_value(message: Message, state: FSMContext, bot: Bot):
         await message.answer(text, reply_markup=file_detail_kb(file_id), parse_mode="HTML")
 
 
-@files_router.message(EditFileStates.waiting_file, F.content_type.in_({"document", "video", "audio", "voice"}))
+@files_router.message(EditFileStates.waiting_file)
 async def edit_file_file(message: Message, state: FSMContext, bot: Bot):
     if not await is_admin(message.from_user.id):
         return
     data = await state.get_data()
     file_id_db = data["file_id"]
 
-    if message.document:
-        new_file_id = message.document.file_id
-        file_type = "document"
-    elif message.video:
-        new_file_id = message.video.file_id
-        file_type = "video"
-    elif message.audio:
-        new_file_id = message.audio.file_id
-        file_type = "audio"
-    elif message.voice:
-        new_file_id = message.voice.file_id
-        file_type = "voice"
-    else:
+    file_type, new_file_id = extract_file(message)
+    if not new_file_id:
+        await message.answer("❌ Не вижу вложения. Отправьте файл или /cancel.")
         return
 
     await update_file(file_id_db, file_id=new_file_id, file_type=file_type)
@@ -407,13 +395,12 @@ async def cq_file_preview(callback: CallbackQuery, callback_data: FileCallback):
 
     await callback.answer("📤 Отправляю предпросмотр...")
     try:
-        if file_data["file_type"] == "video":
-            await callback.message.answer_video(file_data["file_id"])
-        elif file_data["file_type"] == "audio":
-            await callback.message.answer_audio(file_data["file_id"])
-        elif file_data["file_type"] == "voice":
-            await callback.message.answer_voice(file_data["file_id"])
-        else:
-            await callback.message.answer_document(file_data["file_id"])
+        await send_file(
+            callback.bot,
+            callback.message.chat.id,
+            file_data["file_type"],
+            file_data["file_id"],
+        )
     except Exception as e:
+        logger.error("Ошибка предпросмотра файла: %s", e)
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)

@@ -94,7 +94,7 @@ async def global_error_handler(event: ErrorEvent):
 
 
 async def check_channels_on_startup():
-    """Проверяет, что бот — админ во всех активных каналах, и предупреждает админа."""
+    """Тихо проверяет права бота в каналах — только пишет в лог, без сообщений админу."""
     from utils.subscription import verify_bot_admin_rights
     try:
         problems = await verify_bot_admin_rights(bot)
@@ -106,21 +106,10 @@ async def check_channels_on_startup():
         logger.info("✅ Права бота во всех каналах в порядке.")
         return
 
-    logger.warning("⚠️ Проблемы с правами бота в %d канал(ах):", len(problems))
-    lines = ["<b>⚠️ Внимание! Проверка подписки не работает</b>\n"]
     for p in problems:
         ch = p["channel"]
         name = ch.get("title") or ch.get("username") or ch.get("chat_id")
-        logger.warning("  • %s: %s", name, p["reason"])
-        lines.append(f"• <b>{name}</b> — {p['reason']}")
-    lines.append(
-        "\n<b>Решение:</b> добавьте бота в канал и выдайте права "
-        "<b>администратора</b> (достаточно «Добавлять участников» / «Блокировать участников»)."
-    )
-    try:
-        await bot.send_message(ADMIN_ID, "\n".join(lines), parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error("Не удалось отправить предупреждение админу: %s", e)
+        logger.warning("Канал %s: %s", name, p["reason"])
 
 
 async def start_keepalive_server():

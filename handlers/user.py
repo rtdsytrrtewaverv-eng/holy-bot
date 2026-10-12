@@ -20,6 +20,7 @@ from callbacks import SubsCallback, DownloadCallback, NavCallback
 from keyboards.user_kb import subscribe_keyboard, file_delivery_keyboard, start_keyboard
 from utils.subscription import check_subscription
 from utils.ui import normalize_slug_arg
+from utils.files import send_file
 from config import DEFAULT_HOWTO_URL
 
 logger = logging.getLogger(__name__)
@@ -161,24 +162,6 @@ async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: lis
     )
 
 
-async def send_file_by_type(bot: Bot, chat_id: int, file_type: str, file_id: str):
-    """
-    Отправляет файл нужного типа БЕЗ подписи и кнопок.
-    Так файл уходит надёжно — даже если текст/разметка сломаны.
-    """
-    ft = (file_type or "document").lower()
-    if ft == "video":
-        return await bot.send_video(chat_id=chat_id, video=file_id)
-    if ft == "audio":
-        return await bot.send_audio(chat_id=chat_id, audio=file_id)
-    if ft == "voice":
-        return await bot.send_voice(chat_id=chat_id, voice=file_id)
-    if ft == "animation":
-        return await bot.send_animation(chat_id=chat_id, animation=file_id)
-    # по умолчанию — документ
-    return await bot.send_document(chat_id=chat_id, document=file_id)
-
-
 async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
     """
     Выдаёт файл: сначала отправляет САМ ФАЙЛ, затем отдельным сообщением —
@@ -196,7 +179,7 @@ async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
     # 1) Отправляем сам файл (без caption)
     file_sent = False
     try:
-        await send_file_by_type(bot, chat_id, file_data["file_type"], file_data["file_id"])
+        await send_file(bot, chat_id, file_data["file_type"], file_data["file_id"])
         file_sent = True
         await increment_file_downloads(file_data["slug"])
         await increment_downloads(user_id)
@@ -306,17 +289,9 @@ async def cq_download_file(callback: CallbackQuery, callback_data: DownloadCallb
     await callback.answer("📥 Отправляю...")
 
     try:
-        if file_data["file_type"] == "document":
-            await bot.send_document(chat_id=user_id, document=file_data["file_id"])
-        elif file_data["file_type"] == "video":
-            await bot.send_video(chat_id=user_id, video=file_data["file_id"])
-        elif file_data["file_type"] == "audio":
-            await bot.send_audio(chat_id=user_id, audio=file_data["file_id"])
-        elif file_data["file_type"] == "voice":
-            await bot.send_voice(chat_id=user_id, voice=file_data["file_id"])
-        else:
-            await bot.send_document(chat_id=user_id, document=file_data["file_id"])
-    except Exception:
+        await send_file(bot, user_id, file_data["file_type"], file_data["file_id"])
+    except Exception as e:
+        logger.error("Ошибка отправки файла по кнопке: %s", e)
         await callback.answer("❌ Ошибка отправки", show_alert=True)
         return
 

@@ -16,6 +16,7 @@ from callbacks import BroadcastCallback, NavCallback
 from states import BroadcastStates
 from keyboards.common_kb import back_and_menu
 from utils.ui import toast, breadcrumb
+from utils.files import extract_file
 from utils.broadcast_handler import execute_broadcast
 
 broadcast_router = Router(name="broadcast")
@@ -59,8 +60,7 @@ async def cq_broadcast_new(callback: CallbackQuery, state: FSMContext):
         "<b>📣 Новая рассылка</b>\n\n"
         "Отправьте сообщение для рассылки:\n"
         "• Текст (поддерживает HTML)\n"
-        "• Фото (с подписью или без)\n"
-        "• Видео\n\n"
+        "• Любой файл: фото, видео, документ, аудио, GIF и т.д.\n\n"
         "Используйте /cancel для отмены.\n"
         "Затем вы сможете добавить кнопку.",
         parse_mode="HTML"
@@ -75,15 +75,14 @@ async def broadcast_content(message: Message, state: FSMContext, bot: Bot):
 
     msg_type = "text"
     msg_content = message.text or message.caption or ""
+    caption = message.caption or ""
 
-    if message.photo:
-        msg_type = "photo"
-        msg_content = message.photo[-1].file_id
-    elif message.video:
-        msg_type = "video"
-        msg_content = message.video.file_id
+    ftype, fid = extract_file(message)
+    if fid:
+        msg_type = ftype
+        msg_content = fid
 
-    await state.update_data(msg_type=msg_type, msg_content=msg_content)
+    await state.update_data(msg_type=msg_type, msg_content=msg_content, caption=caption)
     await state.set_state(BroadcastStates.button_text)
     await message.answer(
         "<b>🔘 Добавьте кнопку (опционально)</b>\n\n"
@@ -165,6 +164,7 @@ async def cq_broadcast_send(callback: CallbackQuery, callback_data: BroadcastCal
     msg_content = data["msg_content"]
     button_text = data.get("button_text", "")
     button_url = data.get("button_url", "")
+    caption = data.get("caption", "")
 
     bc_id = await create_broadcast(callback.from_user.id, msg_type, msg_content)
     await state.clear()
@@ -188,5 +188,6 @@ async def cq_broadcast_send(callback: CallbackQuery, callback_data: BroadcastCal
             button_text=button_text,
             button_url=button_url,
             filter_type=filter_type,
+            caption=caption,
         )
     )
