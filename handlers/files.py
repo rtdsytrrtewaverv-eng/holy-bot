@@ -29,6 +29,39 @@ logger = logging.getLogger(__name__)
 files_router = Router(name="files")
 
 
+def _file_detail_text(file_data: dict) -> str:
+    in_lib = "✅ Да" if file_data.get("in_library") else "❌ Нет"
+    has_img = "✅ Есть" if file_data.get("image_file_id") else "— Нет"
+    return (
+        f"<b>🏠 › 📁 Файлы › 📄 {file_data['title'] or file_data['slug']}</b>\n\n"
+        f"📝 <b>Название:</b> {file_data['title'] or '—'}\n"
+        f"📄 <b>Описание:</b> {file_data['description'] or '—'}\n"
+        f"🔤 <b>Slug:</b> <code>{file_data['slug']}</code>\n"
+        f"📎 <b>Тип:</b> {file_data['file_type']}\n"
+        f"🔗 <b>Ссылка «Как уст.»:</b> {file_data['howto_url'] or '(по умолчанию)'}\n"
+        f"🖼 <b>Обложка:</b> {has_img}\n"
+        f"📚 <b>В библиотеке:</b> {in_lib}\n"
+        f"📥 <b>Скачиваний:</b> {file_data['downloads']}\n"
+    )
+
+
+async def _show_file_detail(callback: CallbackQuery, file_id: int):
+    file_data = await get_file_by_id(file_id)
+    if not file_data:
+        await callback.answer("❌ Файл не найден", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(
+            _file_detail_text(file_data),
+            reply_markup=file_detail_kb(file_id, bool(file_data.get("in_library"))),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+    await callback.answer()
+
+
 @files_router.message(Command("cancel"), StateFilter(AddFileStates))
 @files_router.message(Command("cancel"), StateFilter(EditFileStates))
 async def cmd_cancel_files(message: Message, state: FSMContext):
@@ -144,7 +177,35 @@ async def add_file_step_howto(message: Message, state: FSMContext):
     howto_url = message.text.strip()
     if howto_url == "-":
         howto_url = ""
+    await state.update_data(howto_url=howto_url)
+    await state.set_state(AddFileStates.image)
+    await message.answer(
+        "<b>🖼 Отправьте обложку-картинку (опционально)</b>\n\n"
+        "Она будет показана перед файлом.\n"
+        "Или отправьте <code>-</code> чтобы пропустить.",
+        parse_mode="HTML"
+    )
 
+
+@files_router.message(AddFileStates.image, F.photo)
+async def add_file_step_image(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    file_id = message.photo[-1].file_id
+    await state.update_data(image_file_id=file_id)
+    await _finalize_add_file(message, state)
+
+
+@files_router.message(AddFileStates.image)
+async def add_file_step_image_skip(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    if message.text and message.text.strip() == "-":
+        await state.update_data(image_file_id="")
+    await _finalize_add_file(message, state)
+
+
+async def _finalize_add_file(message: Message, state: FSMContext):
     data = await state.get_data()
 
     try:
@@ -154,8 +215,10 @@ async def add_file_step_howto(message: Message, state: FSMContext):
             file_id=data["file_id"],
             title=data.get("title", ""),
             description=data.get("description", ""),
-            howto_url=howto_url,
+            howto_url=data.get("howto_url", ""),
         )
+        if data.get("image_file_id"):
+            await update_file(fid, image_file_id=data["image_file_id"])
         await state.clear()
         link = f"https://t.me/{(await message.bot.get_me()).username}?start=file_{data['slug']}"
         await message.answer(
@@ -213,31 +276,7 @@ async def cq_file_edit(callback: CallbackQuery, callback_data: FileCallback):
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
-
-    file_data = await get_file_by_id(callback_data.file_id)
-    if not file_data:
-        await callback.answer("❌ Файл не найден", show_alert=True)
-        return
-
-    text = (
-        f"<b>🏠 › 📁 Файлы › 📄 {file_data['title'] or file_data['slug']}</b>\n\n"
-        f"📝 <b>Название:</b> {file_data['title'] or '—'}\n"
-        f"📄 <b>Описание:</b> {file_data['description'] or '—'}\n"
-        f"🔤 <b>Slug:</b> <code>{file_data['slug']}</code>\n"
-        f"📎 <b>Тип:</b> {file_data['file_type']}\n"
-        f"🔗 <b>Ссылка «Как уст.»:</b> {file_data['howto_url'] or '(по умолчанию)'}\n"
-        f"📥 <b>Скачиваний:</b> {file_data['downloads']}\n"
-    )
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=file_detail_kb(callback_data.file_id),
-            parse_mode="HTML"
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            raise
-    await callback.answer()
+    await _show_file_detail(callback, callback_data.file_id)
 
 
 @files_router.callback_query(FileCallback.filter(F.action == "edit_field"))
@@ -274,6 +313,23 @@ async def cq_file_edit_field(callback: CallbackQuery, callback_data: FileCallbac
             parse_mode="HTML"
         )
         await callback.answer()
+    elif field == "image_file_id":
+        await state.set_state(EditFileStates.waiting_image)
+        await state.update_data(file_id=file_id)
+        await callback.message.edit_text(
+            "<b>🖼 Отправьте новую обложку-картинку</b>\n\n"
+            "Или отправьте <code>-</code> чтобы удалить обложку.\n"
+            "Используйте /cancel для отмены.",
+            parse_mode="HTML"
+        )
+        await callback.answer()
+    elif field == "toggle_library":
+        file_data = await get_file_by_id(file_id)
+        if file_data:
+            new_val = 0 if file_data.get("in_library") else 1
+            await update_file_field(file_id, "in_library", new_val)
+        await callback.answer("✅ Обновлено")
+        await cq_file_edit(callback, callback_data)
     else:
         await callback.answer("❌ Неизвестное поле", show_alert=True)
 
@@ -302,16 +358,11 @@ async def edit_file_value(message: Message, state: FSMContext, bot: Bot):
 
     file_data = await get_file_by_id(file_id)
     if file_data:
-        text = (
-            f"<b>🏠 › 📁 Файлы › 📄 {file_data['title'] or file_data['slug']}</b>\n\n"
-            f"📝 <b>Название:</b> {file_data['title'] or '—'}\n"
-            f"📄 <b>Описание:</b> {file_data['description'] or '—'}\n"
-            f"🔤 <b>Slug:</b> <code>{file_data['slug']}</code>\n"
-            f"📎 <b>Тип:</b> {file_data['file_type']}\n"
-            f"🔗 <b>Ссылка «Как уст.»:</b> {file_data['howto_url'] or '(по умолчанию)'}\n"
-            f"📥 <b>Скачиваний:</b> {file_data['downloads']}\n"
+        await message.answer(
+            _file_detail_text(file_data),
+            reply_markup=file_detail_kb(file_id, bool(file_data.get("in_library"))),
+            parse_mode="HTML"
         )
-        await message.answer(text, reply_markup=file_detail_kb(file_id), parse_mode="HTML")
 
 
 @files_router.message(EditFileStates.waiting_file)
@@ -332,15 +383,53 @@ async def edit_file_file(message: Message, state: FSMContext, bot: Bot):
 
     file_data = await get_file_by_id(file_id_db)
     if file_data:
-        text = (
-            f"<b>🏠 › 📁 Файлы › 📄 {file_data['title'] or file_data['slug']}</b>\n\n"
-            f"📝 <b>Название:</b> {file_data['title'] or '—'}\n"
-            f"📄 <b>Описание:</b> {file_data['description'] or '—'}\n"
-            f"🔤 <b>Slug:</b> <code>{file_data['slug']}</code>\n"
-            f"📎 <b>Тип:</b> {file_data['file_type']}\n"
-            f"📥 <b>Скачиваний:</b> {file_data['downloads']}\n"
+        await message.answer(
+            _file_detail_text(file_data),
+            reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
+            parse_mode="HTML"
         )
-        await message.answer(text, reply_markup=file_detail_kb(file_id_db), parse_mode="HTML")
+
+
+@files_router.message(EditFileStates.waiting_image, F.photo)
+async def edit_file_image(message: Message, state: FSMContext, bot: Bot):
+    if not await is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    file_id_db = data["file_id"]
+    new_image = message.photo[-1].file_id
+
+    await update_file(file_id_db, image_file_id=new_image)
+    await state.clear()
+    await message.answer("✅ Обложка обновлена.")
+
+    file_data = await get_file_by_id(file_id_db)
+    if file_data:
+        await message.answer(
+            _file_detail_text(file_data),
+            reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
+            parse_mode="HTML"
+        )
+
+
+@files_router.message(EditFileStates.waiting_image)
+async def edit_file_image_skip(message: Message, state: FSMContext, bot: Bot):
+    if not await is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    file_id_db = data["file_id"]
+    if message.text and message.text.strip() == "-":
+        await update_file(file_id_db, image_file_id="")
+        await state.clear()
+        await message.answer("🗑 Обложка удалена.")
+        file_data = await get_file_by_id(file_id_db)
+        if file_data:
+            await message.answer(
+                _file_detail_text(file_data),
+                reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
+                parse_mode="HTML"
+            )
+    else:
+        await message.answer("❌ Отправьте фото или <code>-</code> чтобы удалить обложку, либо /cancel.", parse_mode="HTML")
 
 
 @files_router.callback_query(FileCallback.filter(F.action == "delete"))

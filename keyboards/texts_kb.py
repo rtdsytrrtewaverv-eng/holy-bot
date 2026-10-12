@@ -30,6 +30,9 @@ def texts_list_kb(texts: list):
         "support_text": "📞 Текст поддержки",
         "howto_button_text": "📖 Текст кнопки «Как уст.»",
         "tech_works": "🚧 Тех.работы",
+        "library_title": "📚 Заголовок библиотеки",
+        "library_text": "📚 Текст библиотеки",
+        "library_button_text": "📚 Кнопка «Библиотека»",
     }
     for t in texts:
         label = labels.get(t["key"], t["key"])

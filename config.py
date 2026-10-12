@@ -74,9 +74,8 @@ DEFAULT_TEXTS = {
         "После подписки нажми <b>«✅ Я подписался»</b>"
     ),
     "subscription_confirmed": (
-        "<b>✅ Подписка подтверждена!</b>\n\n"
-        "🎁 Ваш файл: <b>{title}</b>\n"
-        "📝 {description}"
+        "<b>{title}</b>\n\n"
+        "{description}"
     ),
     "file_not_found": "<b>❌ Файл не найден.</b>\n\nВозможно, он был удалён или ссылка устарела.",
     "help_text": (
@@ -88,7 +87,7 @@ DEFAULT_TEXTS = {
     ),
     "support_username": "@holy_IPA_admin",
     "support_text": "<b>📞 Поддержка:</b> {username}",
-    "howto_button_text": "📖 Как установить?",
+    "howto_button_text": "Как установить?",
     "tech_works": "<b>🚧 Бот временно на техобслуживании.</b>\n\nПопробуй позже.",
     "maintenance": "0",
 }

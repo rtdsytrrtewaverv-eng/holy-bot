@@ -60,6 +60,9 @@ async def cq_texts_edit(callback: CallbackQuery, callback_data: TextCallback, st
         "support_text": "📞 Текст поддержки",
         "howto_button_text": "📖 Текст кнопки «Как установить?»",
         "tech_works": "🚧 Текст тех.работ",
+        "library_title": "📚 Заголовок библиотеки",
+        "library_text": "📚 Текст библиотеки",
+        "library_button_text": "📚 Текст кнопки «Библиотека»",
     }
     label = labels.get(key, key)
 

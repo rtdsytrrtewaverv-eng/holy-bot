@@ -109,6 +109,13 @@ async def init_db():
             "support_text": DEFAULT_TEXTS["support_text"],
             "howto_button_text": DEFAULT_TEXTS["howto_button_text"],
             "tech_works": DEFAULT_TEXTS["tech_works"],
+            "library_title": "Библиотека приложений",
+            "library_text": (
+                "<b>Библиотека приложений</b>\n\n"
+                "Выберите приложение из списка ниже.\n"
+                "<i>Доступ только для подписчиков канала.</i>"
+            ),
+            "library_button_text": "Библиотека",
         }
         for k, v in text_defaults.items():
             await db.execute(
@@ -152,8 +159,42 @@ async def init_db():
                 except Exception:
                     pass
         await db.commit()
+
+        # Миграции: добавляем новые колонки, если их нет
+        await _add_column_if_missing(db, "files", "image_file_id", "TEXT DEFAULT ''")
+        await _add_column_if_missing(db, "files", "emoji", "TEXT DEFAULT ''")
+        await _add_column_if_missing(db, "files", "in_library", "INTEGER DEFAULT 1")
+        await _add_column_if_missing(db, "files", "sort_order", "INTEGER DEFAULT 0")
+
+        # Настройки оформления по умолчанию
+        style_defaults = {
+            "button_style_main": "primary",       # цвет кнопок меню/библиотеки
+            "button_style_file": "primary",        # цвет кнопок на экране файла
+            "button_style_howto": "success",       # цвет кнопки «Как установить?»
+            "button_style_library": "primary",     # цвет кнопок библиотеки
+            "button_style_back": "primary",        # цвет кнопки «Главное меню»
+            "library_enabled": "1",
+        }
+        for k, v in style_defaults.items():
+            await db.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v)
+            )
+        await db.commit()
     finally:
         await db.close()
+
+
+async def _add_column_if_missing(db, table: str, column: str, ddl: str):
+    """Добавляет колонку в таблицу, если её ещё нет (безопасная миграция)."""
+    try:
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        cols = [r["name"] for r in await cur.fetchall()]
+        if column not in cols:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            await db.commit()
+            logger.info("Миграция: добавлена колонка %s.%s", table, column)
+    except Exception as e:
+        logger.warning("Не удалось добавить колонку %s.%s: %s", table, column, e)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -347,6 +388,20 @@ async def count_files() -> int:
         cur = await db.execute("SELECT COUNT(*) as cnt FROM files")
         row = await cur.fetchone()
         return row["cnt"] if row else 0
+    finally:
+        await db.close()
+
+
+async def get_library_files():
+    """Файлы, отображаемые в библиотеке приложений (in_library = 1)."""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM files WHERE in_library = 1 "
+            "ORDER BY sort_order ASC, id DESC"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
     finally:
         await db.close()
 
@@ -576,6 +631,35 @@ async def is_maintenance() -> bool:
 
 async def is_subscribe_required() -> bool:
     return await get_setting("subscribe_required") == "1"
+
+
+# ═══════════════════════════════════════════════════════════
+# ОФОРМЛЕНИЕ (стили кнопок)
+# ═══════════════════════════════════════════════════════════
+
+VALID_STYLES = ("primary", "success", "danger", "")
+
+
+def _validate_style(value) -> str:
+    """Приводит значение к допустимому стилю кнопки (или пустой строке)."""
+    v = str(value or "").strip().lower()
+    if v == "none":
+        v = ""
+    return v if v in VALID_STYLES else ""
+
+
+async def get_button_style(key: str) -> str:
+    """Возвращает стиль кнопки (primary/success/danger или None). None = стиль по умолчанию."""
+    v = _validate_style(await get_setting(key))
+    return v or None
+
+
+async def set_button_style(key: str, value: str):
+    await set_setting(key, _validate_style(value))
+
+
+async def is_library_enabled() -> bool:
+    return await get_setting("library_enabled") != "0"
 
 
 # ═══════════════════════════════════════════════════════════

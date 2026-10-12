@@ -12,11 +12,13 @@ class AddFileStates(StatesGroup):
     description = State()
     howto_url = State()
     file = State()
+    image = State()
 
 
 class EditFileStates(StatesGroup):
     waiting_value = State()
     waiting_file = State()
+    waiting_image = State()
 
 
 class AddChannelStates(StatesGroup):

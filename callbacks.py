@@ -57,7 +57,14 @@ class BroadcastCallback(CallbackData, prefix="bc"):
 
 class SettingsCallback(CallbackData, prefix="set"):
     """Настройки."""
-    action: str  # toggle_subscribe, toggle_maintenance, add_admin, page
+    action: str  # toggle_subscribe, toggle_maintenance, add_admin, styles, style_main, style_file, style_howto, page
+
+
+class LibraryCallback(CallbackData, prefix="lib"):
+    """Библиотека приложений."""
+    action: str  # open, page, show, download
+    file_id: int = 0
+    page: int = 0
 
 
 class BackupCallback(CallbackData, prefix="bak"):

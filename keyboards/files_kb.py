@@ -40,10 +40,13 @@ def file_list_kb(files: list, page: int, total_pages: int):
     return builder.as_markup()
 
 
-def file_detail_kb(file_id: int):
-    """Детали файла: [✏️][🔗][👁][🗑]."""
+def file_detail_kb(file_id: int, in_library: bool = True):
+    """Детали файла: [✏️][🖼][📚][🔗][👁][🗑]."""
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Редактировать", callback_data=FileCallback(action="edit_field", file_id=file_id, field="title"))
+    builder.button(text="🖼 Обложка", callback_data=FileCallback(action="edit_field", file_id=file_id, field="image_file_id"))
+    lib_text = "📚 Убрать из библиотеки" if in_library else "📚 Добавить в библиотеку"
+    builder.button(text=lib_text, callback_data=FileCallback(action="edit_field", file_id=file_id, field="toggle_library"))
     builder.button(text="🔗 Получить ссылку", callback_data=FileCallback(action="link", file_id=file_id))
     builder.button(text="👁 Предпросмотр", callback_data=FileCallback(action="preview", file_id=file_id))
     builder.button(text="🗑 Удалить", callback_data=FileCallback(action="delete", file_id=file_id))
@@ -63,6 +66,7 @@ def file_edit_fields_kb(file_id: int):
         ("📄 Описание", "description"),
         ("🔗 Ссылка «Как уст.»", "howto_url"),
         ("📎 Slug", "slug"),
+        ("🖼 Обложка", "image_file_id"),
         ("📂 Заменить файл", "file_id"),
     ]
     for label, field in fields:

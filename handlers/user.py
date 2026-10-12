@@ -15,11 +15,16 @@ from database import (
     add_or_update_user, get_file_by_slug, get_text, get_media,
     increment_file_downloads, increment_downloads,
     is_maintenance, is_subscribe_required, is_admin,
+    get_library_files, is_library_enabled,
+    get_button_style,
 )
-from callbacks import SubsCallback, DownloadCallback, NavCallback
-from keyboards.user_kb import subscribe_keyboard, file_delivery_keyboard, start_keyboard
+from callbacks import SubsCallback, DownloadCallback, LibraryCallback
+from keyboards.user_kb import (
+    subscribe_keyboard, file_delivery_keyboard, start_keyboard,
+    library_keyboard,
+)
 from utils.subscription import check_subscription
-from utils.ui import normalize_slug_arg
+from utils.ui import normalize_slug_arg, paginate
 from utils.files import send_file
 from config import DEFAULT_HOWTO_URL
 
@@ -123,21 +128,36 @@ async def cmd_start(message: Message, bot: Bot):
 
     await add_or_update_user(user_id, username, first_name)
 
+    await _send_start(bot, message.chat.id, user_id, username, first_name)
+
+
+async def _send_start(bot: Bot, chat_id: int, user_id: int, username: str = None, first_name: str = None):
+    """Отправляет стартовый экран с актуальными настройками."""
     start_text_tpl = await get_text("start_text")
-    start_text = start_text_tpl.format(
-        username=f"@{username}" if username else first_name
+    start_text = start_text_tpl.replace(
+        "{username}", f"@{username}" if username else (first_name or "")
     )
     admin_flag = await is_admin(user_id)
+    lib_enabled = await is_library_enabled()
+    lib_btn_text = (await get_text("library_button_text")).strip() or "Библиотека"
+    main_style = await get_button_style("button_style_main")
+
     await send_start_photo(
-        bot, message.chat.id, start_text,
-        reply_markup=start_keyboard(is_admin=admin_flag)
+        bot, chat_id, start_text,
+        reply_markup=start_keyboard(
+            is_admin=admin_flag,
+            library_button_text=lib_btn_text,
+            library_enabled=lib_enabled,
+            main_style=main_style
+        )
     )
 
 
-async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: list = None):
+async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: list = None,
+                                from_library: bool = False):
     """Отправляет экран подписки с фото (если задано) и кнопками подписки."""
     sub_text = await get_text("subscribe_text")
-    kb = subscribe_keyboard(slug, channels)
+    kb = subscribe_keyboard(slug, channels, from_library=from_library)
     media = await get_media("subscribe_photo")
     if media and media.get("file_id"):
         try:
@@ -160,17 +180,26 @@ async def send_subscribe_screen(bot: Bot, chat_id: int, slug: str, channels: lis
 
 async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
     """
-    Выдаёт файл: сначала отправляет САМ ФАЙЛ, затем отдельным сообщением —
-    описание с кнопками. Это надёжнее, чем caption, который может не пройти
-    из-за длины/разметки и «утащить» за собой весь файл.
+    Выдаёт файл: сначала отправляет картинку-обложку (если задана) и сам файл,
+    затем отдельным сообщением — описание с кнопками. Если описания нет —
+    показываем только название без лишних смайлов.
     """
     howto_url = file_data.get("howto_url") or DEFAULT_HOWTO_URL
-    howto_text = await get_text("howto_button_text") or "📖 Как установить?"
-    conf_text_tpl = await get_text("subscription_confirmed")
-    conf_text = conf_text_tpl.format(
-        title=file_data.get("title", file_data["slug"]),
-        description=file_data.get("description", "")
-    )
+    howto_text = await get_text("howto_button_text") or "Как установить?"
+
+    title = (file_data.get("title") or "").strip()
+    description = (file_data.get("description") or "").strip()
+
+    # 0) Обложка-картинка (если задана)
+    if file_data.get("image_file_id"):
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=file_data["image_file_id"],
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error("Не удалось отправить обложку файла: %s", e)
 
     # 1) Отправляем сам файл (без caption)
     file_sent = False
@@ -186,31 +215,60 @@ async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
             str(file_data.get("file_id"))[:40], e
         )
 
-    # 2) Отправляем описание с кнопками
-    try:
-        await bot.send_message(
-            chat_id,
-            conf_text,
-            reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text),
-            parse_mode="HTML", disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error("Не удалось отправить описание файла: %s", e)
-        # последняя попытка — без разметки
-        try:
-            plain = f"🎁 Ваш файл: {file_data.get('title', file_data['slug'])}"
-            await bot.send_message(chat_id, plain,
-                                   reply_markup=file_delivery_keyboard(file_data["slug"], howto_url, howto_text))
-        except Exception as e2:
-            logger.error("Не удалось отправить даже простое описание: %s", e2)
+    # 2) Текст выдачи: показываем только то, что заполнено (без лишних смайлов).
+    #    Если ни названия, ни описания нет — отправляем только файл с кнопками.
+    if title and description:
+        conf_text_tpl = await get_text("subscription_confirmed")
+        conf_text = conf_text_tpl.replace("{title}", title).replace("{description}", description)
+    elif title:
+        conf_text = f"<b>{title}</b>"
+    elif description:
+        conf_text = description
+    else:
+        conf_text = None
 
-    # 3) Если файл не ушёл — честно сообщаем об ошибке
+    # 3) Отправляем текст с кнопками (или только кнопки, если текста нет)
+    howto_style = await get_button_style("button_style_howto")
+    back_style = await get_button_style("button_style_back")
+    delivery_kb = file_delivery_keyboard(
+        file_data["slug"], howto_url, howto_text,
+        howto_style=howto_style, back_style=back_style
+    )
+    if conf_text:
+        try:
+            await bot.send_message(
+                chat_id,
+                conf_text,
+                reply_markup=delivery_kb,
+                parse_mode="HTML", disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error("Не удалось отправить описание файла: %s", e)
+            try:
+                await bot.send_message(
+                    chat_id, title or file_data["slug"], reply_markup=delivery_kb
+                )
+            except Exception as e2:
+                logger.error("Не удалось отправить даже простое описание: %s", e2)
+    elif file_sent:
+        # Текста нет — переиспользуем кнопки на самом файле не получится,
+        # поэтому короткое служебное сообщение с кнопками.
+        try:
+            await bot.send_message(
+                chat_id,
+                f"{title or file_data['slug']}",
+                reply_markup=delivery_kb
+            )
+        except Exception as e:
+            logger.error("Не удалось отправить кнопки: %s", e)
+
+    # 4) Если файл не ушёл — честно сообщаем об ошибке
     if not file_sent:
         await bot.send_message(
             chat_id,
-            "⚠️ <b>Файл не удалось отправить.</b>\n\n"
+            "<b>Файл не удалось отправить.</b>\n\n"
             "Администратору: обновите файл в админке "
-            "(📁 Файлы → файл → 📎 Заменить файл), "
+            "(Файлы → файл → Заменить файл), "
             "так как file_id мог устареть.",
             parse_mode="HTML"
         )
@@ -255,23 +313,15 @@ async def cq_help(callback: CallbackQuery):
 
 @user_router.callback_query(SubsCallback.filter(F.action == "main_menu"))
 async def cq_main_menu(callback: CallbackQuery, bot: Bot):
-    """Кнопка «🏠 Главное меню» — возврат на стартовый экран."""
+    """Кнопка «Главное меню» — возврат на стартовый экран."""
     user_id = callback.from_user.id
     username = callback.from_user.username
     first_name = callback.from_user.first_name
-    start_text_tpl = await get_text("start_text")
-    start_text = start_text_tpl.format(
-        username=f"@{username}" if username else first_name
-    )
     try:
         await callback.message.delete()
     except Exception:
         pass
-    admin_flag = await is_admin(user_id)
-    await send_start_photo(
-        bot, user_id, start_text,
-        reply_markup=start_keyboard(is_admin=admin_flag)
-    )
+    await _send_start(bot, user_id, user_id, username, first_name)
     await callback.answer()
 
 
@@ -319,3 +369,112 @@ async def cmd_support(message: Message):
 async def cmd_help(message: Message):
     help_text = await get_text("help_text")
     await message.answer(help_text, parse_mode="HTML")
+
+
+# ═══════════════════════════════════════════════════════════
+# Библиотека приложений (доступ только для подписчиков)
+# ═══════════════════════════════════════════════════════════
+
+async def _check_subscription_or_deny(bot: Bot, chat_id: int, user_id: int) -> bool:
+    """Проверяет подписку. Если не подписан — показывает экран подписки и возвращает False."""
+    if not await is_subscribe_required():
+        return True
+    subscribed, not_subscribed_channels = await check_subscription(bot, user_id)
+    if not subscribed:
+        await send_subscribe_screen(bot, chat_id, "", not_subscribed_channels, from_library=True)
+        return False
+    return True
+
+
+@user_router.callback_query(LibraryCallback.filter(F.action == "open"))
+async def cq_library_open(callback: CallbackQuery, bot: Bot):
+    """Кнопка «Библиотека» — открывает библиотеку приложений."""
+    user_id = callback.from_user.id
+    await add_or_update_user(
+        user_id, callback.from_user.username, callback.from_user.full_name
+    )
+    await callback.answer()
+
+    if not await is_library_enabled():
+        return
+
+    if await is_maintenance():
+        tech_text = await get_text("tech_works")
+        await bot.send_message(user_id, tech_text, parse_mode="HTML")
+        return
+
+    if not await _check_subscription_or_deny(bot, user_id, user_id):
+        return
+
+    await _show_library(bot, user_id, page=0)
+
+
+async def _show_library(bot: Bot, chat_id: int, page: int):
+    files = await get_library_files()
+    paged, total_pages = paginate(files, page, per_page=8)
+
+    title = (await get_text("library_title")).strip() or "Библиотека приложений"
+    text_tpl = await get_text("library_text")
+    if not text_tpl.strip():
+        text_tpl = "<b>{title}</b>\n\nВыберите приложение из списка ниже."
+    text = text_tpl.replace("{title}", title)
+
+    style = await get_button_style("button_style_library")
+    kb = await library_keyboard(paged, page, total_pages, style=style)
+    await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+
+
+@user_router.callback_query(LibraryCallback.filter(F.action == "page"))
+async def cq_library_page(callback: CallbackQuery, callback_data: LibraryCallback, bot: Bot):
+    if await is_maintenance():
+        await callback.answer()
+        return
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await _show_library(bot, callback.from_user.id, page=callback_data.page)
+
+
+@user_router.callback_query(LibraryCallback.filter(F.action == "show"))
+async def cq_library_show(callback: CallbackQuery, callback_data: LibraryCallback, bot: Bot):
+    """Показ конкретного приложения из библиотеки."""
+    user_id = callback.from_user.id
+    await callback.answer()
+
+    if not await _check_subscription_or_deny(bot, user_id, user_id):
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
+
+    from database import get_file_by_id
+    file_data = await get_file_by_id(callback_data.file_id)
+    if not file_data:
+        await callback.answer("Файл не найден", show_alert=True)
+        return
+
+    await deliver_file(bot, user_id, file_data, user_id)
+
+
+@user_router.callback_query(LibraryCallback.filter(F.action == "noop"))
+async def cq_library_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@user_router.callback_query(LibraryCallback.filter(F.action == "check"))
+async def cq_library_check(callback: CallbackQuery, bot: Bot):
+    """«Я подписался» из библиотеки — повторная проверка подписки и вход в библиотеку."""
+    user_id = callback.from_user.id
+    subscribed, _ = await check_subscription(bot, user_id)
+    if not subscribed:
+        await callback.answer("Вы ещё не подписаны!", show_alert=True)
+        return
+    await callback.answer("Подписка подтверждена!")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await _show_library(bot, user_id, page=0)
