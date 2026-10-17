@@ -14,12 +14,13 @@ from aiogram.exceptions import TelegramBadRequest
 from database import (
     is_admin, add_file, get_all_files, count_files, get_file_by_id,
     update_file_field, update_file, delete_file, get_text,
+    generate_unique_slug,
 )
 from callbacks import FileCallback, NavCallback, ConfirmCallback
-from states import AddFileStates, EditFileStates
+from states import AddFileStates, EditFileStates, BatchFileStates
 from keyboards.files_kb import (
     files_menu, file_list_kb, file_detail_kb, file_edit_fields_kb,
-    file_confirm_delete_kb,
+    file_confirm_delete_kb, batch_collecting_kb,
 )
 from utils.ui import toast, breadcrumb, paginate, sanitize_slug
 from utils.files import extract_file, send_file, file_display_name
@@ -64,6 +65,7 @@ async def _show_file_detail(callback: CallbackQuery, file_id: int):
 
 @files_router.message(Command("cancel"), StateFilter(AddFileStates))
 @files_router.message(Command("cancel"), StateFilter(EditFileStates))
+@files_router.message(Command("cancel"), StateFilter(BatchFileStates))
 async def cmd_cancel_files(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("🚫 Действие отменено.")
@@ -236,6 +238,241 @@ async def _finalize_add_file(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
         await state.clear()
+
+
+# ═══════════════════════════════════════════════════════════
+# МАССОВОЕ ДОБАВЛЕНИЕ ФАЙЛОВ
+# ═══════════════════════════════════════════════════════════
+
+@files_router.callback_query(FileCallback.filter(F.action == "add_many"))
+async def cq_file_add_many(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.set_state(BatchFileStates.collecting)
+    await state.update_data(batch=[])
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>📦 Массовое добавление файлов</b>\n\n"
+        "Отправьте <b>несколько файлов</b> подряд — по одному сообщению на файл.\n"
+        "Поддерживается любой тип: документы, видео, аудио, голосовые, GIF, фото, стикеры.\n\n"
+        "Когда закончите — нажмите <b>«Готово»</b>.\n"
+        "Slug будет сгенерирован автоматически из имени файла.\n\n"
+        "Используйте /cancel для отмены.",
+        reply_markup=batch_collecting_kb(),
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(BatchFileStates.collecting)
+async def batch_collect(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+
+    file_type, file_id = extract_file(message)
+    if not file_id:
+        await message.answer(
+            "❌ Не вижу вложения. Отправьте файл или нажмите «Готово», чтобы завершить."
+        )
+        return
+
+    name = file_display_name(message)
+    data = await state.get_data()
+    batch = data.get("batch", [])
+    batch.append({
+        "file_type": file_type,
+        "file_id": file_id,
+        "name": name,
+        "caption": (message.caption or "").strip(),
+    })
+    await state.update_data(batch=batch)
+    await message.answer(
+        f"✅ Добавлено в очередь: <b>{len(batch)}</b>\n"
+        f"<i>{_html_escape(name)}</i>\n\n"
+        "Отправьте ещё файл или нажмите «Готово».",
+        parse_mode="HTML"
+    )
+
+
+@files_router.callback_query(BatchFileStates.collecting, FileCallback.filter(F.action == "batch_done"))
+async def cq_batch_done(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    batch = data.get("batch", [])
+    if not batch:
+        await callback.answer("❌ Очередь пуста — отправьте хотя бы один файл", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.set_state(BatchFileStates.title)
+    await callback.message.edit_text(
+        f"<b>📝 Файлов в очереди: {len(batch)}</b>\n\n"
+        "Введите <b>название</b> — оно будет у всех файлов.\n"
+        "Если у файла было своё название (фото с подписью), оно сохранится отдельно.\n"
+        "Отправьте <code>-</code> чтобы пропустить.",
+        parse_mode="HTML"
+    )
+
+
+@files_router.callback_query(BatchFileStates.collecting, FileCallback.filter(F.action == "batch_cancel"))
+async def cq_batch_cancel(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await callback.answer("🚫 Отменено")
+    await callback.message.edit_text(
+        "<b>🏠 › 📁 Управление файлами</b>\n",
+        reply_markup=files_menu(),
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(BatchFileStates.title)
+async def batch_step_title(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    title = message.text.strip()
+    if title == "-":
+        title = ""
+    await state.update_data(batch_title=title)
+    await state.set_state(BatchFileStates.description)
+    await message.answer(
+        "<b>📄 Введите описание для всех файлов</b>\n\n"
+        "Или отправьте <code>-</code> чтобы пропустить.",
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(BatchFileStates.description)
+async def batch_step_description(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    description = message.text.strip()
+    if description == "-":
+        description = ""
+    await state.update_data(batch_description=description)
+    await state.set_state(BatchFileStates.howto_url)
+    await message.answer(
+        "<b>🔗 Введите ссылку для кнопки «Как установить?»</b>\n\n"
+        "Или отправьте <code>-</code> чтобы использовать по умолчанию.",
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(BatchFileStates.howto_url)
+async def batch_step_howto(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    howto_url = message.text.strip()
+    if howto_url == "-":
+        howto_url = ""
+    await state.update_data(batch_howto_url=howto_url)
+    await state.set_state(BatchFileStates.image)
+    await message.answer(
+        "<b>🖼 Отправьте общую обложку-картинку (опционально)</b>\n\n"
+        "Она будет показана перед каждым файлом.\n"
+        "Или отправьте <code>-</code> чтобы пропустить.",
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(BatchFileStates.image, F.photo)
+async def batch_step_image(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    await state.update_data(batch_image=message.photo[-1].file_id)
+    await _finalize_batch(message, state)
+
+
+@files_router.message(BatchFileStates.image)
+async def batch_step_image_skip(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    if message.text and message.text.strip() == "-":
+        await state.update_data(batch_image="")
+    await _finalize_batch(message, state)
+
+
+async def _finalize_batch(message: Message, state: FSMContext):
+    data = await state.get_data()
+    batch = data.get("batch", [])
+    title = data.get("batch_title", "")
+    description = data.get("batch_description", "")
+    howto_url = data.get("batch_howto_url", "")
+    image = data.get("batch_image", "")
+
+    me = await message.bot.get_me()
+    added = []
+    errors = []
+
+    for item in batch:
+        try:
+            base = item.get("caption") or item.get("name") or "file"
+            slug = await generate_unique_slug(base)
+            item_title = item.get("caption") or title
+            fid = await add_file(
+                slug=slug,
+                file_type=item["file_type"],
+                file_id=item["file_id"],
+                title=item_title,
+                description=description,
+                howto_url=howto_url,
+            )
+            if image:
+                await update_file(fid, image_file_id=image)
+            link = f"https://t.me/{me.username}?start=file_{slug}"
+            added.append((slug, link))
+        except Exception as e:
+            logger.error("Массовое добавление: ошибка для %r: %s", item.get("name"), e)
+            errors.append(f"{item.get('name')}: {e}")
+
+    await state.clear()
+
+    lines = [f"<b>✅ Добавлено файлов: {len(added)}</b>\n"]
+    for slug, link in added:
+        lines.append(f"• <code>{slug}</code>\n  <code>{link}</code>")
+    if errors:
+        lines.append(f"\n<b>❌ Ошибок: {len(errors)}</b>")
+        for err in errors[:10]:
+            lines.append(f"• {_html_escape(err)}")
+
+    text = "\n".join(lines)
+    # Telegram ограничивает сообщение 4096 символами — делим при необходимости
+    for chunk in _split_message(text, 3900):
+        await message.answer(chunk, parse_mode="HTML")
+
+    await message.answer(
+        "<b>🏠 › 📁 Управление файлами</b>\n",
+        reply_markup=files_menu(),
+        parse_mode="HTML"
+    )
+
+
+def _html_escape(s: str) -> str:
+    return (str(s or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+def _split_message(text: str, size: int):
+    """Делит длинный текст по строкам на части не больше size символов."""
+    parts = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > size:
+            if current:
+                parts.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        parts.append(current)
+    return parts
 
 
 @files_router.callback_query(FileCallback.filter(F.action == "list"))

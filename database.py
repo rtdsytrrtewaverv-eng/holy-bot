@@ -323,6 +323,34 @@ async def add_file(slug: str, file_type: str, file_id: str, title: str = "",
         await db.close()
 
 
+async def slug_exists(slug: str) -> bool:
+    """Проверяет, занят ли slug."""
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT 1 FROM files WHERE slug = ?", (slug,))
+        return await cur.fetchone() is not None
+    finally:
+        await db.close()
+
+
+async def generate_unique_slug(base: str) -> str:
+    """
+    Возвращает свободный slug на основе base: если base занят, добавляет -2, -3, ...
+    """
+    import re as _re
+    base = (base or "").strip().lower()
+    base = _re.sub(r"[^a-z0-9_\-]+", "_", base)
+    base = _re.sub(r"_+", "_", base).strip("_")
+    if not base:
+        base = "file"
+    if not await slug_exists(base):
+        return base
+    i = 2
+    while await slug_exists(f"{base}-{i}"):
+        i += 1
+    return f"{base}-{i}"
+
+
 async def get_file_by_slug(slug: str):
     db = await get_db()
     try:

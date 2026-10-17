@@ -21,6 +21,15 @@ class EditFileStates(StatesGroup):
     waiting_image = State()
 
 
+class BatchFileStates(StatesGroup):
+    """Массовое добавление файлов: собираем файлы, потом задаём общие поля."""
+    collecting = State()
+    title = State()
+    description = State()
+    howto_url = State()
+    image = State()
+
+
 class AddChannelStates(StatesGroup):
     title = State()
     chat_id_or_username = State()

@@ -9,12 +9,22 @@ from utils.ui import add_pagination_buttons
 
 
 def files_menu():
-    """Меню файлов: [➕ Добавить] [📋 Список]."""
+    """Меню файлов: [➕ Добавить] [📦 Несколько] [📋 Список]."""
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Добавить файл", callback_data=FileCallback(action="add"))
+    builder.button(text="📦 Добавить несколько", callback_data=FileCallback(action="add_many"))
     builder.button(text="📋 Список файлов", callback_data=FileCallback(action="list", page=0))
     builder.attach(back_and_menu("admin"))
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def batch_collecting_kb():
+    """Клавиатура во время сбора файлов: [✅ Готово] [🚫 Отмена]."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Готово", callback_data=FileCallback(action="batch_done"))
+    builder.button(text="🚫 Отмена", callback_data=FileCallback(action="batch_cancel"))
+    builder.adjust(2)
     return builder.as_markup()
 
 
