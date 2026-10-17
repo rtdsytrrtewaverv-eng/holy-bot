@@ -204,22 +204,47 @@ async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
     # 1) Отправляем файл(ы). Если запись составная — отправляем все вложения.
     items = await get_file_items(file_data["id"])
     file_sent = False
-    try:
-        if items:
-            for it in items:
+    sent_count = 0
+    if items:
+        for it in items:
+            try:
                 await send_file(bot, chat_id, it["item_type"], it["item_file_id"])
                 file_sent = True
-        else:
+                sent_count += 1
+            except Exception as e:
+                logger.error(
+                    "Вложение id=%s (%s) не отправлено для slug=%r: %s",
+                    it.get("id"), it.get("item_type"), file_data.get("slug"), e
+                )
+    else:
+        try:
             await send_file(bot, chat_id, file_data["file_type"], file_data["file_id"])
             file_sent = True
-        await increment_file_downloads(file_data["slug"])
-        await increment_downloads(user_id)
-    except Exception as e:
-        logger.error(
-            "Не удалось отправить файл slug=%r file_type=%r file_id=%r: %s",
-            file_data.get("slug"), file_data.get("file_type"),
-            str(file_data.get("file_id"))[:40], e
-        )
+            sent_count += 1
+        except Exception as e:
+            logger.error(
+                "Не удалось отправить файл slug=%r file_type=%r file_id=%r: %s",
+                file_data.get("slug"), file_data.get("file_type"),
+                str(file_data.get("file_id"))[:40], e
+            )
+
+    if file_sent:
+        try:
+            await increment_file_downloads(file_data["slug"])
+            await increment_downloads(user_id)
+        except Exception as e:
+            logger.error("Не удалось обновить счётчики скачиваний: %s", e)
+
+    if items and sent_count < len(items):
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Отправлено {sent_count} из {len(items)} файлов. "
+                "Часть вложений недоступна — обновите их в админке.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
     # 2) Текст выдачи: показываем только то, что заполнено (без лишних смайлов).
     #    Если ни названия, ни описания нет — отправляем только файл с кнопками.
@@ -347,8 +372,15 @@ async def cq_download_file(callback: CallbackQuery, callback_data: DownloadCallb
     try:
         items = await get_file_items(file_data["id"])
         if items:
+            ok = 0
             for it in items:
-                await send_file(bot, user_id, it["item_type"], it["item_file_id"])
+                try:
+                    await send_file(bot, user_id, it["item_type"], it["item_file_id"])
+                    ok += 1
+                except Exception as e:
+                    logger.error("Вложение id=%s не отправлено: %s", it.get("id"), e)
+            if ok < len(items):
+                await bot.send_message(user_id, f"⚠️ Отправлено {ok} из {len(items)} файлов.")
         else:
             await send_file(bot, user_id, file_data["file_type"], file_data["file_id"])
     except Exception as e:

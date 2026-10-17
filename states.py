@@ -63,3 +63,7 @@ class EditMediaStates(StatesGroup):
 
 class UserSearchStates(StatesGroup):
     query = State()
+
+
+class BackupStates(StatesGroup):
+    waiting_file = State()

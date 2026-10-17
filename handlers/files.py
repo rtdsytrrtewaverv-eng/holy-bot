@@ -22,7 +22,7 @@ from callbacks import FileCallback, NavCallback, ConfirmCallback
 from states import AddFileStates, EditFileStates, BatchFileStates
 from keyboards.files_kb import (
     files_menu, file_list_kb, file_detail_kb, file_edit_fields_kb,
-    file_confirm_delete_kb, batch_collecting_kb, file_items_kb,
+    file_confirm_delete_kb, batch_collecting_kb, file_items_kb, item_add_done_kb,
 )
 from utils.ui import toast, breadcrumb, paginate, sanitize_slug
 from utils.files import extract_file, send_file, file_display_name
@@ -853,10 +853,12 @@ async def cq_file_item_add(callback: CallbackQuery, callback_data: FileCallback,
     await state.update_data(file_id=callback_data.file_id)
     await callback.answer()
     await callback.message.edit_text(
-        "<b>📦 Добавление вложения</b>\n\n"
-        "Отправьте файл, который нужно добавить в эту запись.\n"
-        "Можно добавлять любое количество файлов по одному.\n\n"
+        "<b>📦 Добавление вложений</b>\n\n"
+        "Отправьте файлы по одному (можно любое количество).\n"
+        "Каждый добавленный файл появится в списке.\n\n"
+        "Когда закончите — нажмите «✅ Готово».\n"
         "Используйте /cancel для отмены.",
+        reply_markup=item_add_done_kb(callback_data.file_id),
         parse_mode="HTML"
     )
 
@@ -867,7 +869,9 @@ async def edit_file_item_add(message: Message, state: FSMContext):
         return
     item_type, item_file_id = extract_file(message)
     if not item_file_id:
-        await message.answer("❌ Не вижу вложения. Отправьте файл или /cancel.")
+        await message.answer(
+            "❌ Не вижу вложения. Отправьте файл, нажмите «✅ Готово» или /cancel."
+        )
         return
 
     data = await state.get_data()
@@ -879,8 +883,23 @@ async def edit_file_item_add(message: Message, state: FSMContext):
     lines = [f"<b>✅ Добавлено. Всего вложений: {len(items)}</b>\n"]
     for i, it in enumerate(items, 1):
         lines.append(f"{i}. {_html_escape(it.get('title') or it['item_type'])}")
-    lines.append("\nМожно добавить ещё файл или /cancel, чтобы выйти.")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    lines.append("\nОтправьте ещё файл или нажмите «✅ Готово».")
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=item_add_done_kb(entry_id),
+        parse_mode="HTML"
+    )
+
+
+@files_router.callback_query(FileCallback.filter(F.action == "item_done"))
+async def cq_file_item_done(callback: CallbackQuery, callback_data: FileCallback, state: FSMContext):
+    """Завершение добавления вложений."""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await callback.answer("✅ Сохранено")
+    await _show_file_detail(callback, callback_data.file_id)
 
 
 @files_router.callback_query(FileCallback.filter(F.action == "item_delete"))

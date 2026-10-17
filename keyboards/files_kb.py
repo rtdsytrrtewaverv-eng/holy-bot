@@ -88,10 +88,18 @@ def file_items_kb(file_id: int, items: list):
         callback_data=FileCallback(action="item_add", file_id=file_id)
     )
     builder.row(
-        InlineKeyboardButton(text="⬅️ Назад", callback_data=FileCallback(action="edit", file_id=file_id).pack()),
+        InlineKeyboardButton(text="✅ Готово", callback_data=FileCallback(action="edit", file_id=file_id).pack()),
         InlineKeyboardButton(text="🏠 Главное меню", callback_data=NavCallback(action="main").pack()),
         width=2
     )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def item_add_done_kb(file_id: int):
+    """Кнопка завершения добавления вложений."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Готово", callback_data=FileCallback(action="item_done", file_id=file_id))
     builder.adjust(1)
     return builder.as_markup()
 

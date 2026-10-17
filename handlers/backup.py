@@ -5,10 +5,13 @@
 
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database import is_admin, get_db_dump, restore_db, backup_stats
 from callbacks import BackupCallback, NavCallback
+from states import BackupStates
 from keyboards.common_kb import back_and_menu
 from utils.ui import toast, breadcrumb
 
@@ -78,12 +81,19 @@ async def cq_backup_download(callback: CallbackQuery, bot: Bot):
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 
+@backup_router.message(Command("cancel"), StateFilter(BackupStates))
+async def cmd_cancel_backup(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🚫 Действие отменено.")
+
+
 @backup_router.callback_query(BackupCallback.filter(F.action == "upload"))
-async def cq_backup_upload(callback: CallbackQuery):
+async def cq_backup_upload(callback: CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет доступа", show_alert=True)
         return
 
+    await state.set_state(BackupStates.waiting_file)
     await callback.message.edit_text(
         "<b>📤 Восстановление базы данных</b>\n\n"
         "Отправьте файл <code>.db</code> (скачанный через 📥 Скачать БД).\n\n"
@@ -95,15 +105,14 @@ async def cq_backup_upload(callback: CallbackQuery):
     await callback.answer()
 
 
-@backup_router.message(F.document)
-async def backup_upload_file(message: Message, bot: Bot):
+@backup_router.message(BackupStates.waiting_file, F.document)
+async def backup_upload_file(message: Message, state: FSMContext, bot: Bot):
     if not await is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
         return
 
     doc = message.document
     if not doc.file_name or not doc.file_name.endswith(".db"):
-        await message.answer("❌ Отправьте файл с расширением .db")
+        await message.answer("❌ Отправьте файл с расширением .db (или /cancel).")
         return
 
     await message.answer("⏳ Восстанавливаю базу данных...")
@@ -111,6 +120,7 @@ async def backup_upload_file(message: Message, bot: Bot):
         file_data = await bot.download(doc)
         data = file_data.read()
         await restore_db(data)
+        await state.clear()
         stats = await backup_stats()
         await message.answer(
             "✅ <b>База данных восстановлена!</b>\n\n"
@@ -122,4 +132,11 @@ async def backup_upload_file(message: Message, bot: Bot):
             parse_mode="HTML"
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка восстановления: {e}")
+        await message.answer(f"❌ Ошибка восстановления: {e}\n\nПопробуйте другой файл или /cancel.")
+
+
+@backup_router.message(BackupStates.waiting_file)
+async def backup_upload_other(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    await message.answer("❌ Нужен файл с расширением .db. Отправьте его или /cancel.")
