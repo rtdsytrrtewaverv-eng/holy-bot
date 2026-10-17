@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database import (
     is_admin, add_file, get_all_files, count_files, get_file_by_id,
@@ -526,6 +527,36 @@ async def cq_file_edit(callback: CallbackQuery, callback_data: FileCallback):
     await _show_file_detail(callback, callback_data.file_id)
 
 
+@files_router.callback_query(FileCallback.filter(F.action == "edit_menu"))
+async def cq_file_edit_menu(callback: CallbackQuery, callback_data: FileCallback):
+    """Подменю: что именно редактировать."""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    file_data = await get_file_by_id(callback_data.file_id)
+    if not file_data:
+        await callback.answer("❌ Файл не найден", show_alert=True)
+        return
+
+    items_count = await count_file_items(callback_data.file_id)
+    text = (
+        f"<b>✏️ Редактирование</b>\n"
+        f"<i>{_html_escape(file_data['title'] or file_data['slug'])}</i>\n\n"
+        "Выберите, что хотите изменить:"
+    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=file_edit_fields_kb(callback_data.file_id, items_count),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+    await callback.answer()
+
+
 @files_router.callback_query(FileCallback.filter(F.action == "edit_field"))
 async def cq_file_edit_field(callback: CallbackQuery, callback_data: FileCallback, state: FSMContext):
     if not await is_admin(callback.from_user.id):
@@ -534,19 +565,46 @@ async def cq_file_edit_field(callback: CallbackQuery, callback_data: FileCallbac
 
     field = callback_data.field
     file_id = callback_data.file_id
+    file_data = await get_file_by_id(file_id)
+    if not file_data:
+        await callback.answer("❌ Файл не найден", show_alert=True)
+        return
+
+    back_kb = InlineKeyboardBuilder()
+    back_kb.button(text="⬅️ Назад", callback_data=FileCallback(action="edit_menu", file_id=file_id))
+    back_kb.button(text="🏠 Главное меню", callback_data=NavCallback(action="main"))
+    back_kb.adjust(2)
+    back_markup = back_kb.as_markup()
 
     if field in ("title", "description", "howto_url", "slug"):
         field_labels = {
             "title": "название",
             "description": "описание",
             "howto_url": "ссылку «Как установить?»",
-            "slug": "slug",
+            "slug": "slug (часть ссылки)",
         }
+        current = {
+            "title": file_data["title"],
+            "description": file_data["description"],
+            "howto_url": file_data["howto_url"],
+            "slug": file_data["slug"],
+        }[field]
+        current_str = current or "—"
+        if len(current_str) > 300:
+            current_str = current_str[:300] + "…"
+        hint = {
+            "title": "\n\nОтправьте <code>-</code>, чтобы очистить.",
+            "description": "\n\nОтправьте <code>-</code>, чтобы очистить.",
+            "howto_url": "\n\nОтправьте <code>-</code>, чтобы вернуть ссылку по умолчанию.",
+            "slug": "\n\n<i>Меняйте осторожно — старые ссылки перестанут работать.</i>",
+        }[field]
         await state.set_state(EditFileStates.waiting_value)
         await state.update_data(file_id=file_id, field=field)
         await callback.message.edit_text(
-            f"<b>✏️ Введите новое {field_labels[field]}</b>\n\n"
+            f"<b>✏️ Новое {field_labels[field]}</b>\n\n"
+            f"<b>Сейчас:</b> <code>{_html_escape(current_str)}</code>{hint}\n\n"
             f"Используйте /cancel для отмены.",
+            reply_markup=back_markup,
             parse_mode="HTML"
         )
         await callback.answer()
@@ -554,9 +612,11 @@ async def cq_file_edit_field(callback: CallbackQuery, callback_data: FileCallbac
         await state.set_state(EditFileStates.waiting_file)
         await state.update_data(file_id=file_id)
         await callback.message.edit_text(
-            "<b>📤 Отправьте новый файл</b>\n\n"
-            "Документ, видео, аудио или голосовое.\n"
+            "<b>📂 Замена основного файла</b>\n\n"
+            "Отправьте новый файл — он заменит текущий основной файл записи.\n"
+            "Тип определяется автоматически (документ, видео, аудио и т.д.).\n\n"
             "Используйте /cancel для отмены.",
+            reply_markup=back_markup,
             parse_mode="HTML"
         )
         await callback.answer()
@@ -564,16 +624,18 @@ async def cq_file_edit_field(callback: CallbackQuery, callback_data: FileCallbac
         await state.set_state(EditFileStates.waiting_image)
         await state.update_data(file_id=file_id)
         await callback.message.edit_text(
-            "<b>🖼 Отправьте новую обложку-картинку</b>\n\n"
-            "Или отправьте <code>-</code> чтобы удалить обложку.\n"
+            "<b>🖼 Замена обложки</b>\n\n"
+            "Отправьте новую картинку.\n"
+            "Или отправьте <code>-</code>, чтобы удалить обложку.\n\n"
             "Используйте /cancel для отмены.",
+            reply_markup=back_markup,
             parse_mode="HTML"
         )
         await callback.answer()
     elif field == "toggle_library":
-        file_data = await get_file_by_id(file_id)
-        if file_data:
-            new_val = 0 if file_data.get("in_library") else 1
+        file_data2 = await get_file_by_id(file_id)
+        if file_data2:
+            new_val = 0 if file_data2.get("in_library") else 1
             await update_file_field(file_id, "in_library", new_val)
         await callback.answer("✅ Обновлено")
         await cq_file_edit(callback, callback_data)
@@ -588,7 +650,11 @@ async def edit_file_value(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     file_id = data["file_id"]
     field = data["field"]
-    value = message.text.strip()
+    value = (message.text or "").strip()
+
+    # "-" очищает поле (кроме slug)
+    if value == "-" and field != "slug":
+        value = ""
 
     if field == "slug":
         cleaned = sanitize_slug(value)

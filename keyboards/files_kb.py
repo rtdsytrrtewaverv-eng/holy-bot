@@ -51,10 +51,9 @@ def file_list_kb(files: list, page: int, total_pages: int):
 
 
 def file_detail_kb(file_id: int, in_library: bool = True, items_count: int = 0):
-    """Детали файла: [✏️][🖼][📦 файлы][📚][🔗][👁][🗑]."""
+    """Детали файла: [✏️ Редактировать][📦 Вложения][📚][🔗][👁][🗑]."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✏️ Редактировать", callback_data=FileCallback(action="edit_field", file_id=file_id, field="title"))
-    builder.button(text="🖼 Обложка", callback_data=FileCallback(action="edit_field", file_id=file_id, field="image_file_id"))
+    builder.button(text="✏️ Редактировать", callback_data=FileCallback(action="edit_menu", file_id=file_id))
     builder.button(
         text=f"📦 Вложения: {items_count}",
         callback_data=FileCallback(action="items", file_id=file_id)
@@ -65,10 +64,11 @@ def file_detail_kb(file_id: int, in_library: bool = True, items_count: int = 0):
     builder.button(text="👁 Предпросмотр", callback_data=FileCallback(action="preview", file_id=file_id))
     builder.button(text="🗑 Удалить", callback_data=FileCallback(action="delete", file_id=file_id))
     builder.row(
-        InlineKeyboardButton(text="⬅️ Назад", callback_data=FileCallback(action="list", page=0).pack()),
+        InlineKeyboardButton(text="⬅️ К списку", callback_data=FileCallback(action="list", page=0).pack()),
         InlineKeyboardButton(text="🏠 Главное меню", callback_data=NavCallback(action="main").pack()),
         width=2
     )
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -96,23 +96,24 @@ def file_items_kb(file_id: int, items: list):
     return builder.as_markup()
 
 
-def file_edit_fields_kb(file_id: int):
-    """Выбор поля для редактирования."""
+def file_edit_fields_kb(file_id: int, items_count: int = 0):
+    """Подменю редактирования: выбрать, что именно менять."""
     builder = InlineKeyboardBuilder()
-    fields = [
-        ("📝 Название", "title"),
-        ("📄 Описание", "description"),
-        ("🔗 Ссылка «Как уст.»", "howto_url"),
-        ("📎 Slug", "slug"),
-        ("🖼 Обложка", "image_file_id"),
-        ("📂 Заменить файл", "file_id"),
-    ]
-    for label, field in fields:
-        builder.button(
-            text=label,
-            callback_data=FileCallback(action="edit_field", file_id=file_id, field=field)
-        )
-    builder.attach(back_and_menu("files_menu"))
+    builder.button(text="📝 Изменить название", callback_data=FileCallback(action="edit_field", file_id=file_id, field="title"))
+    builder.button(text="📄 Изменить описание", callback_data=FileCallback(action="edit_field", file_id=file_id, field="description"))
+    builder.button(text="🔗 Ссылка «Как установить?»", callback_data=FileCallback(action="edit_field", file_id=file_id, field="howto_url"))
+    builder.button(text="🖼 Заменить обложку", callback_data=FileCallback(action="edit_field", file_id=file_id, field="image_file_id"))
+    builder.button(text="📂 Заменить основной файл", callback_data=FileCallback(action="edit_field", file_id=file_id, field="file_id"))
+    builder.button(
+        text=f"📦 Вложения: {items_count}",
+        callback_data=FileCallback(action="items", file_id=file_id)
+    )
+    builder.button(text="🔤 Изменить slug (ссылка)", callback_data=FileCallback(action="edit_field", file_id=file_id, field="slug"))
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=FileCallback(action="edit", file_id=file_id).pack()),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data=NavCallback(action="main").pack()),
+        width=2
+    )
     builder.adjust(1)
     return builder.as_markup()
 
