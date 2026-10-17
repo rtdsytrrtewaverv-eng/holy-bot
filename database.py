@@ -725,12 +725,86 @@ async def update_broadcast(broadcast_id: int, **kwargs):
 # ═══════════════════════════════════════════════════════════
 
 async def get_db_dump() -> bytes:
-    """Возвращает бинарное содержимое файла БД."""
-    with open(DB_PATH, "rb") as f:
-        return f.read()
+    """
+    Безопасный снимок всей БД со всеми данными (файлы, приложения, каналы,
+    тексты, настройки, пользователи). Использует SQLite online-backup,
+    поэтому копия всегда консистентна, даже если бот сейчас работает.
+    """
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        src = await aiosqlite.connect(DB_PATH)
+        try:
+            dst = await aiosqlite.connect(tmp_path)
+            try:
+                await src.backup(dst)
+                await dst.commit()
+            finally:
+                await dst.close()
+        finally:
+            await src.close()
+        with open(tmp_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _is_sqlite(data: bytes) -> bool:
+    """Проверяет, что данные — файл SQLite (сигнатура 'SQLite format 3')."""
+    return data[:16] == b"SQLite format 3\x00"
 
 
 async def restore_db(data: bytes):
-    """Перезаписывает БД файл полученными данными."""
-    with open(DB_PATH, "wb") as f:
+    """
+    Восстанавливает БД из полученных данных.
+    Сначала проверяет, что это настоящий файл SQLite, затем перезаписывает.
+    """
+    if not data or not _is_sqlite(data):
+        raise ValueError("Файл не является базой данных SQLite (bot_data.db).")
+
+    # Атомарная замена: пишем во временный файл и подменяем
+    tmp_path = DB_PATH + ".restore.tmp"
+    with open(tmp_path, "wb") as f:
         f.write(data)
+
+    # Проверяем, что временный файл действительно открывается как SQLite
+    try:
+        check = await aiosqlite.connect(tmp_path)
+        try:
+            await check.execute("SELECT name FROM sqlite_master LIMIT 1")
+        finally:
+            await check.close()
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise ValueError(f"Повреждённый файл базы данных: {e}")
+
+    os.replace(tmp_path, DB_PATH)
+
+    # Применяем миграции к восстановленной БД (на случай старой версии схемы)
+    await init_db()
+
+
+async def backup_stats() -> dict:
+    """Краткая сводка того, что попадёт в бэкап."""
+    db = await get_db()
+    try:
+        async def _count(sql):
+            cur = await db.execute(sql)
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+        return {
+            "files": await _count("SELECT COUNT(*) FROM files"),
+            "library": await _count("SELECT COUNT(*) FROM files WHERE in_library = 1"),
+            "channels": await _count("SELECT COUNT(*) FROM channels"),
+            "users": await _count("SELECT COUNT(*) FROM users"),
+        }
+    finally:
+        await db.close()
