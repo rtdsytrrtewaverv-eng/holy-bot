@@ -82,6 +82,16 @@ async def init_db():
                 status      TEXT DEFAULT 'pending',
                 created_at  TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS file_items (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id      INTEGER NOT NULL,
+                item_type    TEXT NOT NULL,
+                item_file_id TEXT NOT NULL,
+                title        TEXT DEFAULT '',
+                sort_order   INTEGER DEFAULT 0,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
         """)
         await db.commit()
 
@@ -462,8 +472,72 @@ async def update_file(file_id: int, **kwargs):
 async def delete_file(file_id: int):
     db = await get_db()
     try:
+        await db.execute("DELETE FROM file_items WHERE file_id = ?", (file_id,))
         await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
         await db.commit()
+    finally:
+        await db.close()
+
+
+# ═══════════════════════════════════════════════════════════
+# СОСТАВНЫЕ ФАЙЛЫ (несколько файлов в одной записи/кнопке)
+# ═══════════════════════════════════════════════════════════
+
+async def add_file_item(entry_id: int, item_type: str, item_file_id: str, title: str = "") -> int:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM file_items WHERE file_id = ?", (entry_id,))
+        row = await cur.fetchone()
+        order = row["n"] if row else 1
+        cur = await db.execute(
+            "INSERT INTO file_items(file_id, item_type, item_file_id, title, sort_order) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (entry_id, item_type, item_file_id, title, order)
+        )
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def get_file_items(entry_id: int):
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM file_items WHERE file_id = ? ORDER BY sort_order ASC, id ASC",
+            (entry_id,)
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def count_file_items(entry_id: int) -> int:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT COUNT(*) AS n FROM file_items WHERE file_id = ?", (entry_id,))
+        row = await cur.fetchone()
+        return row["n"] if row else 0
+    finally:
+        await db.close()
+
+
+async def delete_file_item(item_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM file_items WHERE id = ?", (item_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_file_item(item_id: int):
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM file_items WHERE id = ?", (item_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
     finally:
         await db.close()
 

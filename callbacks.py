@@ -13,9 +13,10 @@ class MenuCallback(CallbackData, prefix="menu"):
 
 class FileCallback(CallbackData, prefix="file"):
     """Управление файлами."""
-    action: str  # list, add, edit, edit_field, delete, confirm_delete, cancel_delete, link, preview, page
+    action: str  # list, add, edit, edit_field, delete, confirm_delete, cancel_delete, link, preview, page, items, item_add, item_delete
     file_id: int = 0
     field: str = ""  # slug, title, description, howto_url, file_type, file_id
+    item_id: int = 0
     page: int = 0
 
 

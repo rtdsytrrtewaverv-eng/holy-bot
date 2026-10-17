@@ -50,11 +50,15 @@ def file_list_kb(files: list, page: int, total_pages: int):
     return builder.as_markup()
 
 
-def file_detail_kb(file_id: int, in_library: bool = True):
-    """Детали файла: [✏️][🖼][📚][🔗][👁][🗑]."""
+def file_detail_kb(file_id: int, in_library: bool = True, items_count: int = 0):
+    """Детали файла: [✏️][🖼][📦 файлы][📚][🔗][👁][🗑]."""
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Редактировать", callback_data=FileCallback(action="edit_field", file_id=file_id, field="title"))
     builder.button(text="🖼 Обложка", callback_data=FileCallback(action="edit_field", file_id=file_id, field="image_file_id"))
+    builder.button(
+        text=f"📦 Вложения: {items_count}",
+        callback_data=FileCallback(action="items", file_id=file_id)
+    )
     lib_text = "📚 Убрать из библиотеки" if in_library else "📚 Добавить в библиотеку"
     builder.button(text=lib_text, callback_data=FileCallback(action="edit_field", file_id=file_id, field="toggle_library"))
     builder.button(text="🔗 Получить ссылку", callback_data=FileCallback(action="link", file_id=file_id))
@@ -65,6 +69,30 @@ def file_detail_kb(file_id: int, in_library: bool = True):
         InlineKeyboardButton(text="🏠 Главное меню", callback_data=NavCallback(action="main").pack()),
         width=2
     )
+    return builder.as_markup()
+
+
+def file_items_kb(file_id: int, items: list):
+    """Управление вложениями составной записи."""
+    builder = InlineKeyboardBuilder()
+    for it in items:
+        label = it.get("title") or f"{it['item_type']} #{it['id']}"
+        if len(label) > 30:
+            label = label[:27] + "..."
+        builder.button(
+            text=f"🗑 {label}",
+            callback_data=FileCallback(action="item_delete", file_id=file_id, item_id=it["id"])
+        )
+    builder.button(
+        text="➕ Добавить вложение",
+        callback_data=FileCallback(action="item_add", file_id=file_id)
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=FileCallback(action="edit", file_id=file_id).pack()),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data=NavCallback(action="main").pack()),
+        width=2
+    )
+    builder.adjust(1)
     return builder.as_markup()
 
 

@@ -19,6 +19,8 @@ class EditFileStates(StatesGroup):
     waiting_value = State()
     waiting_file = State()
     waiting_image = State()
+    waiting_item = State()
+    waiting_item_title = State()
 
 
 class BatchFileStates(StatesGroup):

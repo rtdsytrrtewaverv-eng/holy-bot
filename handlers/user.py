@@ -16,7 +16,7 @@ from database import (
     increment_file_downloads, increment_downloads,
     is_maintenance, is_subscribe_required, is_admin,
     get_library_files, is_library_enabled,
-    get_button_style,
+    get_button_style, get_file_items,
 )
 from callbacks import SubsCallback, DownloadCallback, LibraryCallback
 from keyboards.user_kb import (
@@ -201,11 +201,17 @@ async def deliver_file(bot: Bot, chat_id: int, file_data: dict, user_id: int):
         except Exception as e:
             logger.error("Не удалось отправить обложку файла: %s", e)
 
-    # 1) Отправляем сам файл (без caption)
+    # 1) Отправляем файл(ы). Если запись составная — отправляем все вложения.
+    items = await get_file_items(file_data["id"])
     file_sent = False
     try:
-        await send_file(bot, chat_id, file_data["file_type"], file_data["file_id"])
-        file_sent = True
+        if items:
+            for it in items:
+                await send_file(bot, chat_id, it["item_type"], it["item_file_id"])
+                file_sent = True
+        else:
+            await send_file(bot, chat_id, file_data["file_type"], file_data["file_id"])
+            file_sent = True
         await increment_file_downloads(file_data["slug"])
         await increment_downloads(user_id)
     except Exception as e:
@@ -339,7 +345,12 @@ async def cq_download_file(callback: CallbackQuery, callback_data: DownloadCallb
     await callback.answer("📥 Отправляю...")
 
     try:
-        await send_file(bot, user_id, file_data["file_type"], file_data["file_id"])
+        items = await get_file_items(file_data["id"])
+        if items:
+            for it in items:
+                await send_file(bot, user_id, it["item_type"], it["item_file_id"])
+        else:
+            await send_file(bot, user_id, file_data["file_type"], file_data["file_id"])
     except Exception as e:
         logger.error("Ошибка отправки файла по кнопке: %s", e)
         await callback.answer("❌ Ошибка отправки", show_alert=True)

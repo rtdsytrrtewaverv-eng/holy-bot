@@ -15,12 +15,13 @@ from database import (
     is_admin, add_file, get_all_files, count_files, get_file_by_id,
     update_file_field, update_file, delete_file, get_text,
     generate_unique_slug,
+    add_file_item, get_file_items, count_file_items, delete_file_item, get_file_item,
 )
 from callbacks import FileCallback, NavCallback, ConfirmCallback
 from states import AddFileStates, EditFileStates, BatchFileStates
 from keyboards.files_kb import (
     files_menu, file_list_kb, file_detail_kb, file_edit_fields_kb,
-    file_confirm_delete_kb, batch_collecting_kb,
+    file_confirm_delete_kb, batch_collecting_kb, file_items_kb,
 )
 from utils.ui import toast, breadcrumb, paginate, sanitize_slug
 from utils.files import extract_file, send_file, file_display_name
@@ -30,15 +31,21 @@ logger = logging.getLogger(__name__)
 files_router = Router(name="files")
 
 
-def _file_detail_text(file_data: dict) -> str:
+async def _file_detail_text(file_data: dict) -> str:
     in_lib = "✅ Да" if file_data.get("in_library") else "❌ Нет"
     has_img = "✅ Есть" if file_data.get("image_file_id") else "— Нет"
+    items_count = await count_file_items(file_data["id"])
+    if items_count:
+        files_line = f"📦 <b>Вложений:</b> {items_count} (составная запись)"
+    else:
+        files_line = "📎 <b>Файл:</b> одиночный"
     return (
         f"<b>🏠 › 📁 Файлы › 📄 {file_data['title'] or file_data['slug']}</b>\n\n"
         f"📝 <b>Название:</b> {file_data['title'] or '—'}\n"
         f"📄 <b>Описание:</b> {file_data['description'] or '—'}\n"
         f"🔤 <b>Slug:</b> <code>{file_data['slug']}</code>\n"
         f"📎 <b>Тип:</b> {file_data['file_type']}\n"
+        f"{files_line}\n"
         f"🔗 <b>Ссылка «Как уст.»:</b> {file_data['howto_url'] or '(по умолчанию)'}\n"
         f"🖼 <b>Обложка:</b> {has_img}\n"
         f"📚 <b>В библиотеке:</b> {in_lib}\n"
@@ -51,10 +58,13 @@ async def _show_file_detail(callback: CallbackQuery, file_id: int):
     if not file_data:
         await callback.answer("❌ Файл не найден", show_alert=True)
         return
+    items_count = await count_file_items(file_id)
     try:
         await callback.message.edit_text(
-            _file_detail_text(file_data),
-            reply_markup=file_detail_kb(file_id, bool(file_data.get("in_library"))),
+            await _file_detail_text(file_data),
+            reply_markup=file_detail_kb(
+                file_id, bool(file_data.get("in_library")), items_count
+            ),
             parse_mode="HTML"
         )
     except TelegramBadRequest as e:
@@ -593,13 +603,20 @@ async def edit_file_value(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     await message.answer("✅ Значение обновлено.")
 
+    await _send_file_detail_msg(message, file_id)
+
+
+async def _send_file_detail_msg(message: Message, file_id: int):
+    """Отправляет карточку файла отдельным сообщением (после правок)."""
     file_data = await get_file_by_id(file_id)
-    if file_data:
-        await message.answer(
-            _file_detail_text(file_data),
-            reply_markup=file_detail_kb(file_id, bool(file_data.get("in_library"))),
-            parse_mode="HTML"
-        )
+    if not file_data:
+        return
+    items_count = await count_file_items(file_id)
+    await message.answer(
+        await _file_detail_text(file_data),
+        reply_markup=file_detail_kb(file_id, bool(file_data.get("in_library")), items_count),
+        parse_mode="HTML"
+    )
 
 
 @files_router.message(EditFileStates.waiting_file)
@@ -618,13 +635,7 @@ async def edit_file_file(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     await message.answer("✅ Файл обновлён.")
 
-    file_data = await get_file_by_id(file_id_db)
-    if file_data:
-        await message.answer(
-            _file_detail_text(file_data),
-            reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
-            parse_mode="HTML"
-        )
+    await _send_file_detail_msg(message, file_id_db)
 
 
 @files_router.message(EditFileStates.waiting_image, F.photo)
@@ -639,13 +650,7 @@ async def edit_file_image(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     await message.answer("✅ Обложка обновлена.")
 
-    file_data = await get_file_by_id(file_id_db)
-    if file_data:
-        await message.answer(
-            _file_detail_text(file_data),
-            reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
-            parse_mode="HTML"
-        )
+    await _send_file_detail_msg(message, file_id_db)
 
 
 @files_router.message(EditFileStates.waiting_image)
@@ -658,13 +663,7 @@ async def edit_file_image_skip(message: Message, state: FSMContext, bot: Bot):
         await update_file(file_id_db, image_file_id="")
         await state.clear()
         await message.answer("🗑 Обложка удалена.")
-        file_data = await get_file_by_id(file_id_db)
-        if file_data:
-            await message.answer(
-                _file_detail_text(file_data),
-                reply_markup=file_detail_kb(file_id_db, bool(file_data.get("in_library"))),
-                parse_mode="HTML"
-            )
+        await _send_file_detail_msg(message, file_id_db)
     else:
         await message.answer("❌ Отправьте фото или <code>-</code> чтобы удалить обложку, либо /cancel.", parse_mode="HTML")
 
@@ -721,12 +720,108 @@ async def cq_file_preview(callback: CallbackQuery, callback_data: FileCallback):
 
     await callback.answer("📤 Отправляю предпросмотр...")
     try:
-        await send_file(
-            callback.bot,
-            callback.message.chat.id,
-            file_data["file_type"],
-            file_data["file_id"],
-        )
+        items = await get_file_items(file_data["id"])
+        if items:
+            for it in items:
+                await send_file(callback.bot, callback.message.chat.id, it["item_type"], it["item_file_id"])
+        else:
+            await send_file(
+                callback.bot,
+                callback.message.chat.id,
+                file_data["file_type"],
+                file_data["file_id"],
+            )
     except Exception as e:
         logger.error("Ошибка предпросмотра файла: %s", e)
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# СОСТАВНЫЕ ЗАПИСИ (несколько файлов в одной кнопке)
+# ═══════════════════════════════════════════════════════════
+
+@files_router.callback_query(FileCallback.filter(F.action == "items"))
+async def cq_file_items(callback: CallbackQuery, callback_data: FileCallback):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+
+    file_data = await get_file_by_id(callback_data.file_id)
+    if not file_data:
+        await callback.answer("❌ Файл не найден", show_alert=True)
+        return
+
+    items = await get_file_items(callback_data.file_id)
+    if items:
+        lines = [f"<b>📦 Вложения: {len(items)}</b>\n"]
+        for i, it in enumerate(items, 1):
+            name = it.get("title") or it["item_type"]
+            lines.append(f"{i}. {_html_escape(name)}")
+        lines.append("\n<i>Нажмите на вложение, чтобы удалить его.</i>")
+        text = "\n".join(lines)
+    else:
+        text = (
+            "<b>📦 Вложения</b>\n\n"
+            "<i>Пока пусто. Обычно отправляется одиночный файл записи.</i>\n\n"
+            "Добавьте файлы, чтобы в одной кнопке выдавалось несколько файлов."
+        )
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=file_items_kb(callback_data.file_id, items),
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+    await callback.answer()
+
+
+@files_router.callback_query(FileCallback.filter(F.action == "item_add"))
+async def cq_file_item_add(callback: CallbackQuery, callback_data: FileCallback, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await state.set_state(EditFileStates.waiting_item)
+    await state.update_data(file_id=callback_data.file_id)
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>📦 Добавление вложения</b>\n\n"
+        "Отправьте файл, который нужно добавить в эту запись.\n"
+        "Можно добавлять любое количество файлов по одному.\n\n"
+        "Используйте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+
+
+@files_router.message(EditFileStates.waiting_item)
+async def edit_file_item_add(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    item_type, item_file_id = extract_file(message)
+    if not item_file_id:
+        await message.answer("❌ Не вижу вложения. Отправьте файл или /cancel.")
+        return
+
+    data = await state.get_data()
+    entry_id = data["file_id"]
+    title = file_display_name(message)
+    await add_file_item(entry_id, item_type, item_file_id, title)
+
+    items = await get_file_items(entry_id)
+    lines = [f"<b>✅ Добавлено. Всего вложений: {len(items)}</b>\n"]
+    for i, it in enumerate(items, 1):
+        lines.append(f"{i}. {_html_escape(it.get('title') or it['item_type'])}")
+    lines.append("\nМожно добавить ещё файл или /cancel, чтобы выйти.")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@files_router.callback_query(FileCallback.filter(F.action == "item_delete"))
+async def cq_file_item_delete(callback: CallbackQuery, callback_data: FileCallback):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await delete_file_item(callback_data.item_id)
+    await callback.answer("🗑 Вложение удалено", show_alert=True)
+    await cq_file_items(callback, FileCallback(action="items", file_id=callback_data.file_id))
